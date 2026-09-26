@@ -214,13 +214,19 @@ const ui = {
         document.querySelector('.auth-buttons').classList.remove('d-none');
         document.querySelector('.user-info').classList.add('d-none');
         document.getElementById('adminLink').classList.add('d-none');
-        document.getElementById('accountQuotas').classList.add('d-none');
+        this.setAccountQuotasOpen(false);
+    },
+
+    setAccountQuotasOpen(open) {
+        const visible = Boolean(open && state.currentUser?.quota);
+        document.getElementById('accountQuotas').hidden = !visible;
+        document.getElementById('accountTrigger').setAttribute('aria-expanded', String(visible));
     },
 
     updateQuotas() {
         const user = state.currentUser;
         const quota = user?.quota;
-        document.getElementById('accountQuotas').classList.toggle('d-none', !quota);
+        if (!quota) this.setAccountQuotasOpen(false);
         for (const kind of ['search', 'download']) {
             const value = document.getElementById(`${kind}Quota`);
             const pending = document.getElementById(`${kind}Pending`);
@@ -406,6 +412,44 @@ const app = {
     },
     
     bindEvents() {
+        // 账户悬停显示额度，同时支持键盘和触屏点击。
+        const accountMenu = document.getElementById('accountMenu');
+        const accountTrigger = document.getElementById('accountTrigger');
+        accountMenu.addEventListener('pointerenter', (event) => {
+            if (event.pointerType === 'mouse') ui.setAccountQuotasOpen(true);
+        });
+        accountMenu.addEventListener('pointerleave', (event) => {
+            if (event.pointerType === 'mouse' && !accountMenu.querySelector(':focus-visible')) {
+                ui.setAccountQuotasOpen(false);
+            }
+        });
+        accountTrigger.addEventListener('click', () => {
+            ui.setAccountQuotasOpen(accountTrigger.getAttribute('aria-expanded') !== 'true');
+        });
+        accountMenu.addEventListener('focusin', (event) => {
+            if (event.target !== accountTrigger || accountTrigger.matches(':focus-visible')) {
+                ui.setAccountQuotasOpen(true);
+            }
+        });
+        accountMenu.addEventListener('focusout', (event) => {
+            if (!accountMenu.contains(event.relatedTarget) && !accountMenu.matches(':hover')) {
+                ui.setAccountQuotasOpen(false);
+            }
+        });
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape' && accountTrigger.getAttribute('aria-expanded') === 'true') {
+                if (accountMenu.contains(document.activeElement)) accountTrigger.focus();
+                ui.setAccountQuotasOpen(false);
+                event.preventDefault();
+            }
+        });
+        document.addEventListener('click', (event) => {
+            if (!accountMenu.contains(event.target)) ui.setAccountQuotasOpen(false);
+        });
+        document.getElementById('navbarNav').addEventListener('hide.bs.collapse', () => {
+            ui.setAccountQuotasOpen(false);
+        });
+
         // 搜索相关
         elements.searchBtn.addEventListener('click', () => this.handleSearch());
         elements.searchInput.addEventListener('keypress', (e) => {
