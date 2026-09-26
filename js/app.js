@@ -128,7 +128,7 @@ const api = {
             return res;
         } catch (error) {
             console.error('验证登录状态失败:', error);
-            return { is_authenticated: false };
+            return { unavailable: true };
         }
     },
     
@@ -198,14 +198,37 @@ const ui = {
     updateForLoggedInUser() {
         document.querySelector('.auth-buttons').classList.add('d-none');
         document.querySelector('.user-info').classList.remove('d-none');
-        document.querySelector('.user-avatar').textContent = state.currentUser.username.charAt(0).toUpperCase();
-        document.querySelector('.user-name').textContent = state.currentUser.username;
-        document.querySelector('.vip-badge').textContent = `VIP${state.currentUser.vip_level}`;
+        const user = state.currentUser;
+        const name = user.username || user.email || '用户';
+        document.querySelector('.user-avatar').textContent = name.charAt(0).toUpperCase();
+        document.querySelector('.user-name').textContent = name;
+        document.querySelector('.vip-badge').textContent = `VIP${user.vip_level ?? 0}`;
+        const role = document.querySelector('.user-role');
+        role.classList.toggle('d-none', typeof user.is_admin !== 'boolean');
+        role.textContent = user.is_admin === true ? '管理员' : '普通用户';
+        document.getElementById('adminLink').classList.toggle('d-none', user.is_admin !== true);
+        this.updateQuotas();
     },
     
     updateForLoggedOutUser() {
         document.querySelector('.auth-buttons').classList.remove('d-none');
         document.querySelector('.user-info').classList.add('d-none');
+        document.getElementById('adminLink').classList.add('d-none');
+        document.getElementById('accountQuotas').classList.add('d-none');
+    },
+
+    updateQuotas() {
+        const user = state.currentUser;
+        const quota = user?.quota;
+        document.getElementById('accountQuotas').classList.toggle('d-none', !quota);
+        for (const kind of ['search', 'download']) {
+            const value = document.getElementById(`${kind}Quota`);
+            const pending = document.getElementById(`${kind}Pending`);
+            const usage = quota?.[kind];
+            value.textContent = !usage ? '暂不可用' : user.permissions?.[kind] === false ? '已暂停' :
+                usage.limit === -1 ? '不限次数' : `剩余 ${usage.remaining} / ${usage.limit} 次`;
+            pending.textContent = usage?.pending > 0 ? `处理中 ${usage.pending} 次` : '';
+        }
     },
     
     renderSearchResults(books) {
@@ -254,6 +277,27 @@ const ui = {
 
 // 主应用逻辑
 const app = {
+    async refreshCurrentUser() {
+        const token = state.authToken;
+        if (!token) return;
+        const res = await api.checkAuth();
+        // 忽略已退出或切换账号后的旧响应，网络短暂不可用时保留当前登录。
+        if (state.authToken !== token || res.unavailable) return;
+        if (res.is_authenticated) {
+            state.currentUser = {
+                username: res.username,
+                email: res.email,
+                vip_level: res.vip_level,
+                is_admin: res.is_admin,
+                permissions: res.permissions,
+                quota: res.quota
+            };
+            ui.updateForLoggedInUser();
+        } else if (res.is_authenticated === false) {
+            this.logout();
+        }
+    },
+
     async init() {
         console.log('应用初始化...');
         
@@ -262,17 +306,7 @@ const app = {
         
         // 检查登录状态
         if (state.authToken) {
-            const res = await api.checkAuth();
-            if (res.is_authenticated) {
-                state.currentUser = {
-                    username: res.username,
-                    email: res.email,
-                    vip_level: res.vip_level
-                };
-                ui.updateForLoggedInUser();
-            } else {
-                this.logout();
-            }
+            await this.refreshCurrentUser();
         }
         
         // 绑定事件
@@ -430,6 +464,18 @@ const app = {
         
         // 退出登录
         document.getElementById('btnLogout').addEventListener('click', () => this.logout());
+        document.getElementById('refreshQuotas').addEventListener('click', async (event) => {
+            const button = event.currentTarget;
+            button.disabled = true;
+            try { await this.refreshCurrentUser(); }
+            finally { button.disabled = false; }
+        });
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') this.refreshCurrentUser();
+        });
+        window.addEventListener('pageshow', (event) => {
+            if (event.persisted) this.refreshCurrentUser();
+        });
         
         // 下载确认
         document.getElementById('downloadBtn').addEventListener('click', () => this.handleDownload());
@@ -469,11 +515,16 @@ const app = {
                 return;
             }
             
+            if (!Array.isArray(results)) {
+                utils.showNotification('搜索未完成', results.message || results.error || '搜索暂时不可用', 'error');
+                return;
+            }
             ui.renderSearchResults(results);
         } catch (error) {
             utils.showNotification('错误', '搜索失败，请稍后重试', 'error');
         } finally {
             utils.hideLoading();
+            this.refreshCurrentUser();
         }
     },
     
@@ -520,6 +571,7 @@ const app = {
                 errorElement.classList.add('d-none');
                 
                 ui.updateForLoggedInUser();
+                this.refreshCurrentUser();
                 utils.showNotification('成功', '登录成功');
             } else {
                 errorElement.textContent = res.message;
@@ -583,6 +635,7 @@ const app = {
                 errorElement.classList.add('d-none');
                 
                 ui.updateForLoggedInUser();
+                this.refreshCurrentUser();
                 utils.showNotification('成功', '注册成功');
             } else {
                 errorElement.textContent = res.message;
@@ -660,6 +713,7 @@ const app = {
         localStorage.removeItem('authToken');
         state.authToken = null;
         state.currentUser = null;
+        state.csrfToken = '';
         ui.updateForLoggedOutUser();
         utils.showNotification('提示', '您已成功退出登录');
     },
@@ -793,10 +847,10 @@ const app = {
                 const btn = document.querySelector(`[data-unique-id="${uniqueId}"]`);
                 if (btn) {
                     btn.disabled = true;
-                    btn.innerHTML = '<i class="fas fa-check"></i> 已发送';
+                    btn.innerHTML = '<i class="fas fa-check"></i> 已提交';
                 }
                 
-                utils.showNotification('成功', '下载链接已发送至您的邮箱，请查收！<br>如未收到请检查垃圾邮件。');
+                utils.showNotification('已提交', '书籍正在处理中，完成后将以附件或下载链接发送至您的邮箱，请稍后查看收件箱或垃圾邮件。');
             } else {
                 utils.showNotification('错误', res.error || '下载请求失败', 'error');
                 await this.refreshCaptcha('download');
@@ -807,6 +861,7 @@ const app = {
         } finally {
             downloadBtn.disabled = false;
             downloadBtn.innerHTML = '确认下载';
+            this.refreshCurrentUser();
         }
     },
     
